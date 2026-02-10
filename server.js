@@ -21,42 +21,35 @@ app.get('/', (req, res) => {
     res.send("Socket server is live")
 })
 
-const dmMap = new Map(); // campaignId -> socketId of DM
-const campaignPlayers = new Map(); // campaignId -> [{ socketId, name }]
+const dmMap = new Map();
+const campaignPlayers = new Map();
 
 io.on("connection", async (socket) => {
   console.log("Connected:", socket.id);
   const db = await initDatabase();
 
-  // Player joins a campaign
   socket.on("joinCampaign", async ({ campaignId, name }) => {
     socket.join(campaignId);
 
-    // Ensure session exists in DB
-    let session = await db.get(
-      "SELECT * FROM sessions WHERE campaign_id = ?",
-      [campaignId]
-    );
+    let session = await db.get("SELECT * FROM sessions WHERE campaign_id = ?", [
+      campaignId,
+    ]);
 
     if (!session) {
-      // Create session if first join
       await db.run(
         `INSERT INTO sessions (id, campaign_id, player_count, connected_users)
          VALUES (?, ?, 0, '[]')`,
         [campaignId, campaignId]
       );
-      session = await db.get(
-        "SELECT * FROM sessions WHERE campaign_id = ?",
-        [campaignId]
-      );
+      session = await db.get("SELECT * FROM sessions WHERE campaign_id = ?", [
+        campaignId,
+      ]);
       console.log(`Created new session for campaign ${campaignId}`);
     }
 
-    // Add to in-memory players map
     if (!campaignPlayers.has(campaignId)) campaignPlayers.set(campaignId, []);
     campaignPlayers.get(campaignId).push({ socketId: socket.id, name });
 
-    // Determine role (first join = DM)
     let role = "player";
     if (!dmMap.has(campaignId)) {
       role = "dm";
@@ -65,7 +58,6 @@ io.on("connection", async (socket) => {
 
     const players = campaignPlayers.get(campaignId).map((p) => p.name);
 
-    // Update session in DB
     await db.run(
       `UPDATE sessions
        SET player_count = ?, connected_users = ?
@@ -73,11 +65,10 @@ io.on("connection", async (socket) => {
       [players.length, JSON.stringify(players), campaignId]
     );
 
-    // Emit role to this socket
     socket.emit("roleAssigned", { role });
 
-    // Notify all players in this campaign
     io.to(campaignId).emit("sessionUpdate", {
+      campaignId,
       player_count: players.length,
       connected_users: players,
       dm_name: dmMap.has(campaignId)
@@ -91,13 +82,11 @@ io.on("connection", async (socket) => {
     console.log(`Socket ${socket.id} joined ${campaignId} as ${role}`);
   });
 
-  // Handle disconnection
   socket.on("disconnecting", async () => {
     const rooms = Array.from(socket.rooms);
     for (const campaignId of rooms) {
       if (campaignId === socket.id) continue;
 
-      // Remove from in-memory players
       if (campaignPlayers.has(campaignId)) {
         const updated = campaignPlayers
           .get(campaignId)
@@ -105,29 +94,33 @@ io.on("connection", async (socket) => {
         campaignPlayers.set(campaignId, updated);
       }
 
-      // If DM disconnected, close session for all
       if (dmMap.get(campaignId) === socket.id) {
-        io.to(campaignId).emit("sessionClosed"); // can redirect frontend
+        io.to(campaignId).emit("sessionClosed");
         io.to(campaignId).emit("sessionUpdate", {
+          campaignId,
           player_count: 0,
           connected_users: [],
           dm_name: null,
           session_closed: true,
         });
-        io.socketsLeave(campaignId);
-        dmMap.delete(campaignId);
-        campaignPlayers.delete(campaignId);
+
+        setTimeout(() => {
+          io.socketsLeave(campaignId);
+          dmMap.delete(campaignId);
+          campaignPlayers.delete(campaignId);
+        }, 500);
+
         await db.run(
-            `UPDATE sessions SET player_count = 0, connected_users = '[]' WHERE campaign_id = ?`,
-            [campaignId]
+          `UPDATE sessions SET player_count = 0, connected_users = '[]' WHERE campaign_id = ?`,
+          [campaignId]
         );
 
         console.log(`DM left, session ${campaignId} closed`);
         continue;
       }
 
-      // Update DB for remaining players
-      const updatedPlayers = campaignPlayers.get(campaignId)?.map(p => p.name) || [];
+      const updatedPlayers =
+        campaignPlayers.get(campaignId)?.map((p) => p.name) || [];
       await db.run(
         `UPDATE sessions
          SET player_count = ?, connected_users = ?
@@ -135,12 +128,14 @@ io.on("connection", async (socket) => {
         [updatedPlayers.length, JSON.stringify(updatedPlayers), campaignId]
       );
 
-      // Notify remaining players
       io.to(campaignId).emit("sessionUpdate", {
+        campaignId,
         player_count: updatedPlayers.length,
         connected_users: updatedPlayers,
         dm_name: dmMap.has(campaignId)
-          ? campaignPlayers.get(campaignId).find(p => p.socketId === dmMap.get(campaignId))?.name
+          ? campaignPlayers
+              .get(campaignId)
+              .find((p) => p.socketId === dmMap.get(campaignId))?.name
           : null,
         session_closed: false,
       });
