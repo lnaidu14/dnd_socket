@@ -1,49 +1,49 @@
-import express from "express"
+import express from "express";
+import http from "http";
+import { Server } from "socket.io";
+import { getDb } from "./db.js";
 
-const app = express()
-import http from "http"
-import { initDatabase } from "../dnd/src/data/db/init.js";
-
-const server = http.createServer(app)
-
-import { Server } from "socket.io"
+const app = express();
+const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
     origin: "http://localhost:3000",
-    methods: ["GET", "POST"]
-  }
+    methods: ["GET", "POST"],
+  },
 });
 
-const port = 4000
+const port = 4000;
 
-app.get('/', (req, res) => {
-    res.send("Socket server is live")
-})
+app.get("/", (req, res) => {
+  res.send("Socket server is live");
+});
 
 const dmMap = new Map();
 const campaignPlayers = new Map();
 
 io.on("connection", async (socket) => {
   console.log("Connected:", socket.id);
-  const db = await initDatabase();
+  const db = await getDb();
 
   socket.on("joinCampaign", async ({ campaignId, name }) => {
     socket.join(campaignId);
 
-    let session = await db.get("SELECT * FROM sessions WHERE campaign_id = ?", [
-      campaignId,
-    ]);
+    let session = await db.get(
+      "SELECT * FROM sessions WHERE campaign_id = $1",
+      [campaignId]
+    );
 
     if (!session) {
       await db.run(
         `INSERT INTO sessions (id, campaign_id, player_count, connected_users)
-         VALUES (?, ?, 0, '[]')`,
+         VALUES ($1, $2, 0, '[]')`,
         [campaignId, campaignId]
       );
-      session = await db.get("SELECT * FROM sessions WHERE campaign_id = ?", [
-        campaignId,
-      ]);
+      session = await db.get(
+        "SELECT * FROM sessions WHERE campaign_id = $1",
+        [campaignId]
+      );
       console.log(`Created new session for campaign ${campaignId}`);
     }
 
@@ -60,8 +60,8 @@ io.on("connection", async (socket) => {
 
     await db.run(
       `UPDATE sessions
-       SET player_count = ?, connected_users = ?
-       WHERE campaign_id = ?`,
+       SET player_count = $1, connected_users = $2
+       WHERE campaign_id = $3`,
       [players.length, JSON.stringify(players), campaignId]
     );
 
@@ -111,7 +111,7 @@ io.on("connection", async (socket) => {
         }, 500);
 
         await db.run(
-          `UPDATE sessions SET player_count = 0, connected_users = '[]' WHERE campaign_id = ?`,
+          `UPDATE sessions SET player_count = 0, connected_users = '[]' WHERE campaign_id = $1`,
           [campaignId]
         );
 
@@ -123,8 +123,8 @@ io.on("connection", async (socket) => {
         campaignPlayers.get(campaignId)?.map((p) => p.name) || [];
       await db.run(
         `UPDATE sessions
-         SET player_count = ?, connected_users = ?
-         WHERE campaign_id = ?`,
+         SET player_count = $1, connected_users = $2
+         WHERE campaign_id = $3`,
         [updatedPlayers.length, JSON.stringify(updatedPlayers), campaignId]
       );
 
@@ -146,5 +146,5 @@ io.on("connection", async (socket) => {
 });
 
 server.listen(port, () => {
-    console.log(`Listening on port ${port}`)
-})
+  console.log(`Listening on port ${port}`);
+});
